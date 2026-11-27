@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LaLiga Predictor — Mecz & Tabela Sezonu</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-6">
+
+  <main class="max-w-6xl mx-auto space-y-6">
+    <!-- Nagłówek -->
+    <header class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+      <div>
+        <h1 class="text-2xl font-bold text-white">⚽ LaLiga Predictor</h1>
+        <p class="text-xs text-slate-400">MySQL (XAMPP) • Rekordów w bazie: <strong id="dbCount" class="text-emerald-400">{{ matches_count }}</strong></p>
+      </div>
+      <div class="flex items-center gap-3">
+        <button id="syncBtn" onclick="syncApi()"
+                class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm px-4 py-2 rounded-xl transition flex items-center gap-2">
+          🔄 Pobierz najnowsze mecze z API
+        </button>
+      </div>
+    </header>
+
+    <div id="syncBanner" class="hidden bg-emerald-500/10 border border-emerald-500/40 text-emerald-300 px-4 py-3 rounded-xl text-sm"></div>
+
+    <!-- Zakładki -->
+    <div class="flex gap-2 border-b border-slate-800 pb-2">
+      <button id="tabMatchBtn" onclick="switchTab('match')"
+              class="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 text-slate-950 transition">
+        🎯 Predykcja meczu
+      </button>
+      <button id="tabTableBtn" onclick="switchTab('table')"
+              class="px-4 py-2 rounded-lg text-sm font-semibold bg-slate-900 text-slate-300 hover:bg-slate-800 transition">
+        🏆 Predykcja tabeli końcowej LaLiga
+      </button>
+    </div>
+
+    <!-- ==================== ZAKŁADKA 1: PREDYKCJA MECZU ==================== -->
+    <div id="matchTab" class="space-y-6">
+      <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+          <div class="md:col-span-5">
+            <label class="block text-xs uppercase text-slate-400 mb-1.5">Gospodarz (Home)</label>
+            <input id="homeInput" list="teamsList" placeholder="np. Barcelona..."
+                   class="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl focus:outline-none focus:border-emerald-500">
+          </div>
+          <div class="md:col-span-5">
+            <label class="block text-xs uppercase text-slate-400 mb-1.5">Gość (Away)</label>
+            <input id="awayInput" list="teamsList" placeholder="np. Real Madrid..."
+                   class="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl focus:outline-none focus:border-emerald-500">
+          </div>
+          <div class="md:col-span-2">
+            <button id="predictBtn" onclick="runPrediction()"
+                    class="w-full bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold py-3 px-4 rounded-xl transition">
+              Oblicz
+            </button>
+          </div>
+        </div>
+
+        <datalist id="teamsList">
+          {% for team in teams %}
+            <option value="{{ team }}">
+          {% endfor %}
+        </datalist>
+
+        <div id="statusMsg" class="mt-4 text-sm text-slate-400 hidden"></div>
+      </section>
+
+      <section id="resultSection" class="hidden space-y-6">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+          <div class="flex justify-between items-center mb-4">
+            <h2 id="matchTitle" class="text-xl font-bold"></h2>
+            <span id="expectedGoalsBadge" class="text-xs bg-slate-800 text-slate-300 px-3 py-1 rounded-full"></span>
+          </div>
+
+          <div class="grid grid-cols-3 gap-4 text-center mb-3">
+            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
+              <div class="text-xs text-slate-400">Wygrana 1</div>
+              <div id="probHome" class="text-2xl font-bold text-emerald-400 mt-1">0%</div>
+            </div>
+            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
+              <div class="text-xs text-slate-400">Remis X</div>
+              <div id="probDraw" class="text-2xl font-bold text-amber-400 mt-1">0%</div>
+            </div>
+            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
+              <div class="text-xs text-slate-400">Wygrana 2</div>
+              <div id="probAway" class="text-2xl font-bold text-sky-400 mt-1">0%</div>
+            </div>
+          </div>
+
+          <div class="w-full h-3 bg-slate-800 rounded-full overflow-hidden flex">
+            <div id="barHome" class="bg-emerald-500 h-full transition-all duration-500"></div>
+            <div id="barDraw" class="bg-amber-500 h-full transition-all duration-500"></div>
+            <div id="barAway" class="bg-sky-500 h-full transition-all duration-500"></div>
+          </div>
+
+          <div class="flex gap-6 mt-4 text-sm text-slate-300">
+            <div>BTTS: <strong id="statBtts" class="text-white"></strong></div>
+            <div>Over 2.5: <strong id="statOver25" class="text-white"></strong></div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+            <h3 class="font-semibold mb-4">Top 10 dokładnych wyników</h3>
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-slate-400 border-b border-slate-800 text-left">
+                  <th class="pb-2">Wynik</th>
+                  <th class="pb-2">Szansa</th>
+                  <th class="pb-2 w-1/2">Rozkład</th>
+                </tr>
+              </thead>
+              <tbody id="scoresTable" class="divide-y divide-slate-800/60"></tbody>
+            </table>
+          </div>
+
+          <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+            <h3 class="font-semibold mb-4">Prognozowane statystyki</h3>
+            <div id="statsContainer" class="space-y-4 text-sm"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ==================== ZAKŁADKA 2: PREDYKCJA TABELI ==================== -->
+    <div id="tableTab" class="hidden space-y-6">
+      <section class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+          <div>
+            <h2 class="text-lg font-bold text-white">Symulacja tabeli końcowej LaLiga</h2>
+            <p id="tableMeta" class="text-xs text-slate-400">Model symuluje wszystkie nierozegrane mecze sezonu 5 000 razy.</p>
+          </div>
+          <button id="simTableBtn" onclick="loadLeagueTable()"
+                  class="bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-sm px-4 py-2.5 rounded-xl transition">
+            ⚡ Przelicz tabelę sezonu
+          </button>
+        </div>
+
+        <div id="tableStatus" class="text-sm text-slate-400 mb-4 hidden"></div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm text-left">
+            <thead>
+              <tr class="text-xs uppercase text-slate-400 border-b border-slate-800">
+                <th class="py-3 px-2">#</th>
+                <th class="py-3 px-2">Drużyna</th>
+                <th class="py-3 px-2 text-center" title="Rozegrane mecze">M</th>
+                <th class="py-3 px-2 text-center" title="Aktualne punkty">Akt. Pkt</th>
+                <th class="py-3 px-2 text-center font-bold text-white" title="Prognozowane punkty na koniec sezonu">Prog. Pkt</th>
+                <th class="py-3 px-2 text-center" title="Prognozowany bilans bramek">Prog. +/-</th>
+                <th class="py-3 px-2 text-center text-amber-400">Mistrz %</th>
+                <th class="py-3 px-2 text-center text-emerald-400">Top 4 (LM) %</th>
+                <th class="py-3 px-2 text-center text-sky-400">Top 5-6 (LE) %</th>
+                <th class="py-3 px-2 text-center text-rose-400">Spadek %</th>
+              </tr>
+            </thead>
+            <tbody id="leagueTableBody" class="divide-y divide-slate-800/60">
+              <tr>
+                <td colspan="10" class="py-8 text-center text-slate-500">
+                  Kliknij „Przelicz tabelę sezonu”, aby uruchomić symulację Monte Carlo dla wszystkich pozostałych kolejek.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="flex flex-wrap gap-4 mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400">
+          <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> Liga Mistrzów (1–4)</span>
+          <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-sky-500"></span> Liga Europy (5–6)</span>
+          <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> Strefa spadkowa (18–20)</span>
+        </div>
+      </section>
+    </div>
+
+  </main>
+
+<script>
+function switchTab(tab) {
+  const isMatch = tab === 'match';
+  document.getElementById('matchTab').classList.toggle('hidden', !isMatch);
+  document.getElementById('tableTab').classList.toggle('hidden', isMatch);
+
+  document.getElementById('tabMatchBtn').className = isMatch
+    ? 'px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 text-slate-950 transition'
+    : 'px-4 py-2 rounded-lg text-sm font-semibold bg-slate-900 text-slate-300 hover:bg-slate-800 transition';
+
+  document.getElementById('tabTableBtn').className = !isMatch
+    ? 'px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 text-slate-950 transition'
+    : 'px-4 py-2 rounded-lg text-sm font-semibold bg-slate-900 text-slate-300 hover:bg-slate-800 transition';
+}
+
+async function syncApi() {
+  const btn = document.getElementById('syncBtn');
+  const banner = document.getElementById('syncBanner');
+  btn.disabled = true;
+  btn.innerText = '⏳ Pobieranie z API...';
+  banner.classList.add('hidden');
+
+  try {
+    const res = await fetch('/api/sync', { method: 'POST' });
+    const data = await res.json();
+    banner.classList.remove('hidden');
+    if (res.ok) {
+      banner.className = 'bg-emerald-500/10 border border-emerald-500/40 text-emerald-300 px-4 py-3 rounded-xl text-sm';
+      banner.innerText = data.message;
+      document.getElementById('dbCount').innerText = data.total_matches;
+    } else {
+      banner.className = 'bg-rose-500/10 border border-rose-500/40 text-rose-300 px-4 py-3 rounded-xl text-sm';
+      banner.innerText = data.error;
+    }
+  } catch (e) {
+    banner.classList.remove('hidden');
+    banner.innerText = 'Błąd połączenia przy synchronizacji.';
+  } finally {
+    btn.disabled = false;
+    btn.innerText = '🔄 Pobierz najnowsze mecze z API';
+  }
+}
+
+async function runPrediction() {
+  const home = document.getElementById('homeInput').value;
+  const away = document.getElementById('awayInput').value;
+  const status = document.getElementById('statusMsg');
+  const btn = document.getElementById('predictBtn');
+
+  status.classList.remove('hidden', 'text-red-400');
+  status.innerText = 'Liczenie 100 000 symulacji...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/predict', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({home, away})
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.classList.add('text-red-400');
+      status.innerText = data.error || 'Błąd';
+      return;
+    }
+
+    status.classList.add('hidden');
+    document.getElementById('resultSection').classList.remove('hidden');
+
+    const s = data.stats;
+    document.getElementById('matchTitle').innerText = `${data.home_team} vs ${data.away_team}`;
+    document.getElementById('expectedGoalsBadge').innerText = `xG (λ): ${s.lambda_home} - ${s.lambda_away}`;
+
+    document.getElementById('probHome').innerText = `${s.prob_home}%`;
+    document.getElementById('probDraw').innerText = `${s.prob_draw}%`;
+    document.getElementById('probAway').innerText = `${s.prob_away}%`;
+
+    document.getElementById('barHome').style.width = `${s.prob_home}%`;
+    document.getElementById('barDraw').style.width = `${s.prob_draw}%`;
+    document.getElementById('barAway').style.width = `${s.prob_away}%`;
+
+    document.getElementById('statBtts').innerText = `${s.btts}%`;
+    document.getElementById('statOver25').innerText = `${s.over_2_5}%`;
+
+    const tbody = document.getElementById('scoresTable');
+    tbody.innerHTML = '';
+    const maxProb = data.results[0]?.prob || 15;
+    data.results.forEach(r => {
+      const width = Math.min(100, (r.prob / maxProb) * 100);
+      tbody.innerHTML += `
+        <tr>
+          <td class="py-2 font-bold">${r.home} : ${r.away}</td>
+          <td class="py-2 text-emerald-400">${r.prob}%</td>
+          <td class="py-2">
+            <div class="w-full bg-slate-800 h-2 rounded-full">
+              <div class="bg-emerald-500 h-2 rounded-full" style="width:${width}%"></div>
+            </div>
+          </td>
+        </tr>`;
+    });
+
+    const rows = [
+      ['Strzały ogółem', s.shots_home, s.shots_away],
+      ['Strzały celne', s.target_home, s.target_away],
+      ['Rzuty rożne', s.corners_home, s.corners_away],
+      ['Żółte kartki', s.yellow_home, s.yellow_away],
+    ];
+    const statsBox = document.getElementById('statsContainer');
+    statsBox.innerHTML = '';
+    rows.forEach(([label, hVal, aVal]) => {
+      const total = (hVal + aVal) || 1;
+      const hPct = (hVal / total) * 100;
+      statsBox.innerHTML += `
+        <div>
+          <div class="flex justify-between text-xs mb-1">
+            <span class="font-bold text-emerald-400">${hVal}</span>
+            <span class="text-slate-400">${label}</span>
+            <span class="font-bold text-sky-400">${aVal}</span>
+          </div>
+          <div class="w-full h-2 bg-sky-500/40 rounded-full overflow-hidden flex">
+            <div class="bg-emerald-500 h-full" style="width:${hPct}%"></div>
+          </div>
+        </div>`;
+    });
+  } catch (err) {
+    status.classList.add('text-red-400');
+    status.innerText = 'Błąd połączenia z backendem.';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function loadLeagueTable() {
+  const btn = document.getElementById('simTableBtn');
+  const status = document.getElementById('tableStatus');
+  const tbody = document.getElementById('leagueTableBody');
+
+  btn.disabled = true;
+  status.classList.remove('hidden', 'text-rose-400');
+  status.innerText = 'Symulowanie wszystkich pozostałych kolejek sezonu (5 000 scenariuszy)...';
+
+  try {
+    const res = await fetch('/api/table');
+    const data = await res.json();
+    if (!res.ok) {
+      status.classList.add('text-rose-400');
+      status.innerText = data.error || 'Błąd symulacji tabeli.';
+      return;
+    }
+
+    status.classList.add('hidden');
+    document.getElementById('tableMeta').innerText =
+      `Rozegrano: ${data.played_matches} meczów • Pozostało do symulacji: ${data.remaining_matches} meczów (${data.simulations} symulacji Monte Carlo)`;
+
+    tbody.innerHTML = '';
+    const totalTeams = data.table.length;
+    data.table.forEach(row => {
+      let badgeColor = 'bg-slate-800 text-slate-300';
+      if (row.pos <= 4) badgeColor = 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40';
+      else if (row.pos <= 6) badgeColor = 'bg-sky-500/20 text-sky-400 border border-sky-500/40';
+      else if (row.pos >= totalTeams - 2) badgeColor = 'bg-rose-500/20 text-rose-400 border border-rose-500/40';
+
+      const gdSign = row.proj_gd > 0 ? `+${row.proj_gd}` : row.proj_gd;
+
+      tbody.innerHTML += `
+        <tr class="hover:bg-slate-800/40 transition">
+          <td class="py-2.5 px-2">
+            <span class="inline-flex items-center justify-center w-6 h-6 rounded-md text-xs font-bold ${badgeColor}">
+              ${row.pos}
+            </span>
+          </td>
+          <td class="py-2.5 px-2 font-semibold text-white">${row.team}</td>
+          <td class="py-2.5 px-2 text-center text-slate-400">${row.cur_mp}</td>
+          <td class="py-2.5 px-2 text-center text-slate-300">${row.cur_pts}</td>
+          <td class="py-2.5 px-2 text-center font-bold text-white text-base">${row.proj_pts}</td>
+          <td class="py-2.5 px-2 text-center text-slate-300">${gdSign}</td>
+          <td class="py-2.5 px-2 text-center font-medium text-amber-400">${row.prob_title}%</td>
+          <td class="py-2.5 px-2 text-center font-medium text-emerald-400">${row.prob_ucl}%</td>
+          <td class="py-2.5 px-2 text-center text-sky-400">${row.prob_uel}%</td>
+          <td class="py-2.5 px-2 text-center font-medium text-rose-400">${row.prob_relegation}%</td>
+        </tr>`;
+    });
+  } catch (e) {
+    status.classList.add('text-rose-400');
+    status.innerText = 'Błąd połączenia z backendem.';
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
