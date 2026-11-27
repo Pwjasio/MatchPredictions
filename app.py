@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+print("kutas")
 import os
 import difflib
 from datetime import datetime
