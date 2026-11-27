@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
+import os
 import difflib
 from datetime import datetime
 import numpy as np
 from flask import Flask, request, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
 
-# ---------- KONFIGURACJA SILNIKA I BAZY XAMPP ----------
-MYSQL_URI = "mysql+pymysql://root:@127.0.0.1:3306/laliga_predictor?charset=utf8mb4"
+# ---------- KONFIGURACJA SILNIKA I BAZY SUPABASE ----------
+SUPABASE_URI = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://postgres.lcwjjksfowvgdmbxdqvf:BZV4Ner9BlaM@aws-0-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require"
+)
+
+# SQLAlchemy 2.0 wymaga prefiksu postgresql:// zamiast postgres://
+if SUPABASE_URI.startswith("postgres://"):
+    SUPABASE_URI = SUPABASE_URI.replace("postgres://", "postgresql://", 1)
+
 CURRENT_SEASON = "2627"  # Aktualny sezon (2026/27)
 
 SIMULATIONS = 100_000
@@ -17,12 +26,16 @@ MARKET_BLEND = 0.12
 HOME_ADV = 0.18
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = MYSQL_URI
+app.config['SQLALCHEMY_DATABASE_URI'] = SUPABASE_URI
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
+}
 
 db = SQLAlchemy(app)
 
-# ------------------ MODELE MYSQL ------------------
+# ------------------ MODELE POSTGRESQL (SUPABASE) ------------------
 
 class Match(db.Model):
     __tablename__ = 'matches'
@@ -58,6 +71,10 @@ class Odds(db.Model):
     avg_home = db.Column(db.Float)
     avg_draw = db.Column(db.Float)
     avg_away = db.Column(db.Float)
+
+# Tworzymy tabele po zdefiniowaniu klas Match i Odds
+with app.app_context():
+    db.create_all()
 
 # ------------------ POMOCNICZE ------------------
 
@@ -229,19 +246,11 @@ def simulate_match_forecast(home_norm: str, away_norm: str, simulations=SIMULATI
 # ------------------ SILNIK PREDYKCJI TABELI SEZONU ------------------
 
 def simulate_league_table(season_code=CURRENT_SEASON, n_sims=SEASON_SIMULATIONS):
-    """
-    1. Pobiera rozegrane mecze z aktualnego sezonu (buduje aktualną tabelę).
-    2. Wyznacza brakujące mecze z pełnego harmonogramu każdy-z-każdym (20 drużyn = 380 meczów).
-    3. Symuluje wszystkie pozostałe mecze n_sims razy metodą Monte Carlo.
-    4. Zwraca prognozowaną tabelę końcową (średnie punkty, bilans, szanse na Mistrzostwo, Top 4 LM, Spadek).
-    """
     season_matches = Match.query.filter_by(season=season_code).all()
     if not season_matches:
-        # Jeśli brak oznaczenia sezonu, weź ostatnie 380 lub z bieżącego roku
         latest = Match.query.order_by(Match.match_date.desc()).limit(380).all()
         if not latest:
             return None
-        # Wykryj ostatni sezon po dacie
         max_date = latest[0].match_date
         cutoff = datetime(max_date.year if max_date.month >= 7 else max_date.year - 1, 7, 1)
         season_matches = [m for m in latest if m.match_date and m.match_date >= cutoff]
@@ -287,14 +296,12 @@ def simulate_league_table(season_code=CURRENT_SEASON, n_sims=SEASON_SIMULATIONS)
 
     team_idx = {t: i for i, t in enumerate(teams)}
 
-    # Brakujące mecze do końca sezonu (każdy z każdym: dom i wyjazd)
     remaining_fixtures = []
     for h in teams:
         for a in teams:
             if h != a and (h, a) not in played_pairs:
                 remaining_fixtures.append((h, a))
 
-    # Inicjalizacja macierzy symulacji (n_sims x n_teams)
     pts_sim = np.tile([cur_pts[t] for t in teams], (n_sims, 1)).astype(np.int32)
     gd_sim = np.tile([cur_gf[t] - cur_ga[t] for t in teams], (n_sims, 1)).astype(np.int32)
     gf_sim = np.tile([cur_gf[t] for t in teams], (n_sims, 1)).astype(np.int32)
@@ -302,7 +309,6 @@ def simulate_league_table(season_code=CURRENT_SEASON, n_sims=SEASON_SIMULATIONS)
 
     rng = np.random.default_rng()
 
-    # Symulacja każdego pozostałego meczu
     for h, a in remaining_fixtures:
         est = estimate_team_stats(h, a)
         i_h, i_a = team_idx[h], team_idx[a]
@@ -331,11 +337,9 @@ def simulate_league_table(season_code=CURRENT_SEASON, n_sims=SEASON_SIMULATIONS)
         gf_sim[:, i_a] += ga
         ga_sim[:, i_a] += gh
 
-    # Sortowanie pozycji w każdej z n_sims symulacji (punkty -> bilans bramek -> bramki strzelone)
-    # Używamy klucza złożonego do szybkiego wektorowego rankingu
     composite_score = pts_sim * 1_000_000 + gd_sim * 1_000 + gf_sim
     order = np.argsort(-composite_score, axis=1)
-    ranks = np.argsort(order, axis=1) + 1  # Pozycje od 1 do n_teams
+    ranks = np.argsort(order, axis=1) + 1
 
     table_rows = []
     for i, t in enumerate(teams):
@@ -357,7 +361,6 @@ def simulate_league_table(season_code=CURRENT_SEASON, n_sims=SEASON_SIMULATIONS)
             'prob_relegation': round(float(np.mean(team_ranks >= (n_teams - 2)) * 100.0), 1),
         })
 
-    # Sortowanie po prognozowanych punktach (a następnie prognozowanym bilansie)
     table_rows.sort(key=lambda x: (x['proj_pts'], x['proj_gd']), reverse=True)
     for idx, r in enumerate(table_rows, start=1):
         r['pos'] = idx
@@ -389,7 +392,7 @@ def api_predict():
     away_norm = find_team_candidate(away_q, team_map)
 
     if not home_norm or not away_norm:
-        return jsonify({'error': 'Nie znaleziono drużyny w bazie XAMPP.'}), 400
+        return jsonify({'error': 'Nie znaleziono drużyny w bazie Supabase.'}), 400
     if home_norm == away_norm:
         return jsonify({'error': 'Wybierz dwie różne drużyny.'}), 400
 
